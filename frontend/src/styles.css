@@ -788,3 +788,60 @@ label.check input {
     align-items: flex-start;
   }
 }
+
+.file-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.file-stat-card {
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 14px;
+  padding: 14px 16px;
+}
+
+.file-stat-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.file-stat-head strong {
+  font-size: 0.92rem;
+  word-break: break-all;
+}
+
+.file-stat-head code {
+  font-size: 0.78rem;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.file-stat-metrics {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.file-stat-metrics li {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.9rem;
+  border-bottom: 1px dashed var(--line);
+  padding-bottom: 4px;
+}
+
+.file-stat-pct {
+  margin-top: 10px;
+  font-size: 0.92rem;
+}
+
+.file-stat-pct strong {
+  font-size: 1.25rem;
+}

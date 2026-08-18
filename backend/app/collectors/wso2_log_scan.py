@@ -18,6 +18,7 @@ from app.collectors.wso2_ei_mi import (
     classify_error_source,
     classify_logger,
 )
+from app.collectors.wso2_file_stats import IPV4, TX_HINT, traffic_tuple
 
 LEVEL_LINE = re.compile(
     r"(?:TID:\s*\[[^\]]*\]\s*(?:\[[^\]]*\]\s*)?)?"
@@ -158,6 +159,9 @@ def scan_carbon_file(
     uri_counts: Counter[str] = Counter()
     api_counts: Counter[str] = Counter()
     tx_counts: Counter[str] = Counter()
+    ip_mentions: Counter[str] = Counter()
+    parsed_entries = 0
+    transaction_events = 0
     bytes_read = 0
     lines_seen = 0
     failure_count_raw = 0
@@ -222,6 +226,13 @@ def scan_carbon_file(
                 break
 
             parsed = _parse_line(line)
+            if parsed:
+                parsed_entries += 1
+                if TX_HINT.search(line) or TX_HINT.search(parsed.get("message") or ""):
+                    transaction_events += 1
+                for ip in IPV4.findall(line):
+                    if ip.startswith(("10.", "192.168.", "172.")):
+                        ip_mentions[ip] += 1
             if not parsed:
                 # continuation / stack / orphan business-failure fragments
                 if STACK_FRAME.search(line):
@@ -322,6 +333,8 @@ def scan_carbon_file(
     except OSError:
         head = ""
     product = infer_product(path.name, head)
+    total_tx = transaction_events if transaction_events > 0 else parsed_entries
+    traffic = traffic_tuple(total_tx, failure_count_raw)
 
     return {
         "file": path.name,
@@ -352,6 +365,14 @@ def scan_carbon_file(
             "api_names": dict(api_counts.most_common(25)),
             "transaction_ids": dict(tx_counts.most_common(25)),
         },
+        "ip_mentions": dict(ip_mentions.most_common(20)),
+        "parsed_entries": parsed_entries,
+        "transaction_events": transaction_events,
+        "traffic": traffic,
+        "total_transactions": traffic["total_transactions"],
+        "total_success": traffic["total_success"],
+        "total_errors": traffic["total_errors"],
+        "error_pct": traffic["error_pct"],
         "note": (
             "Full-file error-first scan for APIM/MI carbon logs. INFO business failures "
             "(4xx/5xx, auth, timeouts, DB connect) are treated as findings."
@@ -377,4 +398,73 @@ def scan_many(paths: Iterable[Path], max_read_bytes: int | None = None) -> dict[
         "files": files,
         "total_failure_signatures": total_unique,
         "merged_signals": dict(merged_signals),
+    }
+
+
+HTTP_METHOD = re.compile(r'"(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+')
+
+
+def scan_http_access_file(
+    path: Path,
+    *,
+    max_read_bytes: int | None = None,
+) -> dict[str, Any]:
+    """Count HTTP transactions, success, and errors from an access log."""
+    method_lines = 0
+    success = 0
+    errors = 0
+    ip_mentions: Counter[str] = Counter()
+    bytes_read = 0
+    lines_seen = 0
+    size = path.stat().st_size if path.exists() else 0
+    hit_byte_limit = False
+    with path.open("r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            lines_seen += 1
+            try:
+                bytes_read = fh.tell()
+            except OSError:
+                bytes_read += len(line.encode("utf-8", errors="replace"))
+            if max_read_bytes and bytes_read > max_read_bytes:
+                hit_byte_limit = True
+                break
+            for ip in IPV4.findall(line):
+                ip_mentions[ip] += 1
+            if HTTP_METHOD.search(line):
+                method_lines += 1
+                continue
+            sm = re.search(r"\s(\d{3})\s", line)
+            if not sm:
+                continue
+            code = int(sm.group(1))
+            if 200 <= code < 400:
+                success += 1
+            elif code >= 400:
+                errors += 1
+    status_n = success + errors
+    total = max(method_lines, status_n)
+    traffic = traffic_tuple(total, errors)
+    return {
+        "file": path.name,
+        "log_type": "http_access",
+        "product": "APIM",
+        "size_bytes": size,
+        "bytes_scanned": bytes_read,
+        "lines_scanned": lines_seen,
+        "scanned_fully": not hit_byte_limit,
+        "ip_mentions": dict(ip_mentions.most_common(20)),
+        "traffic": traffic,
+        "total_transactions": traffic["total_transactions"],
+        "total_success": traffic["total_success"],
+        "total_errors": traffic["total_errors"],
+        "error_pct": traffic["error_pct"],
+        "signals": {
+            "http_4xx": 0,
+            "http_5xx": errors,
+            "error_lines": errors,
+            "warn_lines": 0,
+        },
+        "failure_count_raw": errors,
+        "failure_count_unique": errors,
+        "level_counts": {},
     }

@@ -176,15 +176,25 @@ async def get_report(report_id: str):
             not (e.plain_meaning and e.call_flow and e.impact_summary) or not e.impacted_customers
             for e in report.errors
         )
-        if (needs or not cov.get("impacted_customers_summary")) and report.errors:
+        if (needs or not cov.get("impacted_customers_summary") or not cov.get("file_stats")) and (
+            report.errors or cov.get("scan_summaries")
+        ):
             evidence = {
                 "priority_failure_findings": cov.get("priority_failure_findings") or [],
                 "scan_summaries": cov.get("scan_summaries") or [],
             }
-            report.errors = enrich_wso2_errors(report.errors, evidence)
-            if evidence.get("impacted_customers_summary"):
-                cov["impacted_customers_summary"] = evidence["impacted_customers_summary"]
-                report.log_coverage = cov
+            if report.errors:
+                report.errors = enrich_wso2_errors(report.errors, evidence)
+                if evidence.get("impacted_customers_summary"):
+                    cov["impacted_customers_summary"] = evidence["impacted_customers_summary"]
+            if not cov.get("file_stats") and cov.get("scan_summaries"):
+                from app.collectors.wso2_file_stats import build_file_stats
+
+                cov["file_stats"] = build_file_stats(
+                    cov.get("scan_summaries") or [],
+                    report.context.ip_addresses,
+                )
+            report.log_coverage = cov
         return report
     return DevOpsReport.model_validate(payload)
 
@@ -305,7 +315,14 @@ async def download_report(report_id: str, fmt: str) -> FileResponse:
                 report.errors = enrich_wso2_errors(report.errors, evidence)
                 if evidence.get("impacted_customers_summary"):
                     cov["impacted_customers_summary"] = evidence["impacted_customers_summary"]
-                    report.log_coverage = cov
+                if not cov.get("file_stats") and cov.get("scan_summaries"):
+                    from app.collectors.wso2_file_stats import build_file_stats
+
+                    cov["file_stats"] = build_file_stats(
+                        cov.get("scan_summaries") or [],
+                        report.context.ip_addresses,
+                    )
+                report.log_coverage = cov
                 path = settings.reports_dir / f"{report_id}.html"
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(render_wso2_html(report), encoding="utf-8")

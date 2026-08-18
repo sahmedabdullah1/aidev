@@ -9,7 +9,8 @@ from typing import Any
 
 from app.config import Settings
 from app.collectors.wso2_ei_mi import parse_carbon_entries
-from app.collectors.wso2_log_scan import scan_carbon_file
+from app.collectors.wso2_log_scan import scan_carbon_file, scan_http_access_file
+from app.collectors.wso2_file_stats import display_name, traffic_tuple
 from app.models.wso2_schemas import Wso2LogType
 
 LOG_TYPE_PATTERNS: list[tuple[Wso2LogType, re.Pattern[str]]] = [
@@ -326,20 +327,82 @@ def collect_wso2_logs(files: list[Path], settings: Settings) -> dict[str, Any]:
                 scan_summaries.append(
                     {
                         "file": name,
+                        "display_name": display_name(name),
+                        "log_type": log_type.value,
                         "product": scanned.get("product"),
                         "failure_count_unique": scanned.get("failure_count_unique"),
                         "failure_count_raw": scanned.get("failure_count_raw"),
                         "signals": scanned.get("signals"),
                         "identity": scanned.get("identity"),
+                        "ip_mentions": scanned.get("ip_mentions"),
                         "scanned_fully": scanned.get("scanned_fully"),
                         "size_bytes": scanned.get("size_bytes"),
                         "level_counts": scanned.get("level_counts"),
+                        "total_transactions": scanned.get("total_transactions"),
+                        "total_success": scanned.get("total_success"),
+                        "total_errors": scanned.get("total_errors"),
+                        "error_pct": scanned.get("error_pct"),
+                        "traffic": scanned.get("traffic"),
                     }
                 )
             else:
-                text = _read_text(path, max_bytes)
-                parser = PARSERS.get(log_type)
-                parsed = parser(text) if parser else {"error_lines": _sample_matching(text, ERROR_RE, 40), "tail": text[-2000:]}
+                if log_type == Wso2LogType.http_access:
+                    scanned = scan_http_access_file(path, max_read_bytes=max_bytes)
+                    parsed = {**parse_http_access(_read_text(path, min(max_bytes, 2_000_000))), **{
+                        "traffic": scanned.get("traffic"),
+                        "total_transactions": scanned.get("total_transactions"),
+                        "total_success": scanned.get("total_success"),
+                        "total_errors": scanned.get("total_errors"),
+                        "error_pct": scanned.get("error_pct"),
+                    }}
+                    scan_summaries.append(
+                        {
+                            "file": name,
+                            "display_name": display_name(name),
+                            "log_type": log_type.value,
+                            "product": scanned.get("product") or "APIM",
+                            "failure_count_raw": scanned.get("failure_count_raw"),
+                            "failure_count_unique": scanned.get("failure_count_unique"),
+                            "signals": scanned.get("signals"),
+                            "ip_mentions": scanned.get("ip_mentions"),
+                            "scanned_fully": scanned.get("scanned_fully"),
+                            "size_bytes": scanned.get("size_bytes"),
+                            "total_transactions": scanned.get("total_transactions"),
+                            "total_success": scanned.get("total_success"),
+                            "total_errors": scanned.get("total_errors"),
+                            "error_pct": scanned.get("error_pct"),
+                            "traffic": scanned.get("traffic"),
+                        }
+                    )
+                else:
+                    text = _read_text(path, max_bytes)
+                    parser = PARSERS.get(log_type)
+                    parsed = parser(text) if parser else {"error_lines": _sample_matching(text, ERROR_RE, 40), "tail": text[-2000:]}
+                    lines_n = text.count("\n") + (1 if text else 0)
+                    fail_n = 0
+                    if log_type == Wso2LogType.audit:
+                        fail_n = len(parsed.get("failure_events") or [])
+                        lines_n = int(parsed.get("event_count") or lines_n)
+                    elif isinstance(parsed.get("errorish"), list):
+                        fail_n = len(parsed["errorish"])
+                    elif isinstance(parsed.get("startup_errors"), list):
+                        fail_n = len(parsed["startup_errors"])
+                    traffic = traffic_tuple(lines_n, fail_n)
+                    scan_summaries.append(
+                        {
+                            "file": name,
+                            "display_name": display_name(name),
+                            "log_type": log_type.value,
+                            "product": "APIM/MI",
+                            "failure_count_raw": fail_n,
+                            "size_bytes": path.stat().st_size,
+                            "total_transactions": traffic["total_transactions"],
+                            "total_success": traffic["total_success"],
+                            "total_errors": traffic["total_errors"],
+                            "error_pct": traffic["error_pct"],
+                            "traffic": traffic,
+                        }
+                    )
 
         entry = {
             "filename": name,

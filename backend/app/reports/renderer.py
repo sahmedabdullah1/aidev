@@ -186,6 +186,17 @@ WSO2_MD = Template(
 ## Executive summary
 {{ report.executive_summary }}
 
+{% if report.log_coverage and report.log_coverage.file_stats %}
+## Per log file
+{% for f in report.log_coverage.file_stats %}
+### {{ f.display_name or f.file }} — `{{ f.ip or "IP not mapped" }}`
+- Total transac: {{ f.total_transactions }}
+- Success: {{ f.total_success }}
+- Error: {{ f.total_errors }}
+- Error %: {{ f.error_pct }}%
+{% endfor %}
+{% endif %}
+
 {% if report.primary_root_cause %}## Primary root cause
 {{ report.primary_root_cause }}
 {% endif %}
@@ -435,6 +446,35 @@ def render_wso2_html(report) -> str:
       </div>
     </section>"""
 
+    file_stats = (report.log_coverage or {}).get("file_stats") or []
+    file_cards = []
+    for row in file_stats:
+        pct = float(row.get("error_pct") or 0)
+        name = html.escape(str(row.get("display_name") or row.get("file") or "log"))
+        ip = html.escape(str(row.get("ip") or "IP not mapped"))
+        product = html.escape(str(row.get("product") or ""))
+        file_cards.append(
+            f"""
+      <article class="file-stat">
+        <div class="file-stat-head">
+          <h4>{name}</h4>
+          <span class="ip">{ip}</span>
+        </div>
+        <p class="muted">{product} · {html.escape(str(row.get("log_type") or ""))}</p>
+        <ul class="file-metrics">
+          <li><span>Total transac</span><strong>{int(row.get("total_transactions") or 0):,}</strong></li>
+          <li><span>Success</span><strong>{int(row.get("total_success") or 0):,}</strong></li>
+          <li><span>Error</span><strong>{int(row.get("total_errors") or 0):,}</strong></li>
+        </ul>
+        <div class="pct">Error rate <strong>{pct:.2f}%</strong></div>
+      </article>"""
+        )
+    file_section = ""
+    if file_cards:
+        file_section = f"""
+    <h2>Per log file (node)</h2>
+    <div class="file-grid">{"".join(file_cards)}</div>"""
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -518,6 +558,15 @@ def render_wso2_html(report) -> str:
     table.cust {{ width:100%; border-collapse:collapse; margin-top:10px; font-size:.92rem; }}
     table.cust th, table.cust td {{ text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }}
     table.cust th {{ color:var(--muted); font-size:.75rem; text-transform:uppercase; letter-spacing:.03em; }}
+    .file-grid {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:14px; margin-bottom:22px; }}
+    .file-stat {{ background:#fff; border:1px solid var(--line); border-radius:14px; padding:14px 16px; }}
+    .file-stat-head {{ display:flex; justify-content:space-between; gap:8px; align-items:flex-start; }}
+    .file-stat h4 {{ margin:0; font-size:.95rem; word-break:break-all; }}
+    .file-stat .ip {{ font-family:ui-monospace,monospace; font-size:.8rem; color:var(--accent); white-space:nowrap; }}
+    .file-metrics {{ list-style:none; margin:10px 0; padding:0; display:grid; gap:6px; }}
+    .file-metrics li {{ display:flex; justify-content:space-between; font-size:.9rem; border-bottom:1px dashed var(--line); padding-bottom:4px; }}
+    .file-stat .pct {{ margin-top:8px; font-size:.95rem; }}
+    .file-stat .pct strong {{ font-size:1.25rem; }}
     h2 {{ font-family:"Instrument Serif",Georgia,serif; font-weight:400; font-size:1.55rem; margin:28px 0 12px; }}
     a {{ color:var(--accent); }}
     @media (max-width:800px) {{
@@ -553,6 +602,7 @@ def render_wso2_html(report) -> str:
     </div>
 
     {customer_section}
+    {file_section}
 
     <h2>Issue visuals</h2>
     <div class="grid2">

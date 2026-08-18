@@ -10,6 +10,7 @@ from typing import Any
 
 from app.analyzers.llm_client import LLMAnalysisError, chat_json, evidence_budget_chars, resolve_llm_settings
 from app.analyzers.wso2_impact import enrich_wso2_errors
+from app.collectors.wso2_file_stats import build_file_stats
 from app.config import Settings
 from app.models.schemas import Severity
 from app.models.wso2_schemas import (
@@ -32,7 +33,7 @@ Include plain_meaning, call_flow (short steps), config_checks (file + what to se
 Docs:{WSO2_DOC}
 JSON only:
 {{"executive_summary":"","health_score":0,"risk_level":"high","primary_root_cause":"",
-"correlated_timeline":[],"errors":[{{"log_type":"wso2carbon","severity":"high",
+"correlated_timeline":["2026-08-06 12:55 — JWT rejected"],"errors":[{{"log_type":"wso2carbon","severity":"high",
 "error":"easy title","technical_name":"ExceptionOrHandler",
 "plain_meaning":"Client tried to call APIM with wrong creds",
 "call_flow":["Client","APIM Gateway","Reject"],
@@ -103,12 +104,15 @@ def _pack_evidence(
     for row in log_evidence.get("scan_summaries") or []:
         scan.append(
             {
-                "file": row.get("file"),
+                "file": row.get("display_name") or row.get("file"),
                 "product": row.get("product"),
                 "unique": row.get("failure_count_unique"),
                 "signals": row.get("signals"),
                 "full": row.get("scanned_fully"),
                 "bytes": row.get("size_bytes"),
+                "tx": row.get("total_transactions"),
+                "errors": row.get("total_errors"),
+                "error_pct": row.get("error_pct"),
             }
         )
     compact = {
@@ -146,6 +150,52 @@ def _log_type(raw: str | None) -> Wso2LogType:
         return Wso2LogType(raw or "unknown")
     except Exception:  # noqa: BLE001
         return Wso2LogType.unknown
+
+
+def _as_text(val: Any) -> str:
+    if val is None:
+        return ""
+    if isinstance(val, str):
+        return val.strip()
+    if isinstance(val, dict):
+        ts = val.get("ts") or val.get("timestamp") or val.get("time")
+        event = (
+            val.get("event")
+            or val.get("message")
+            or val.get("text")
+            or val.get("summary")
+            or val.get("step")
+            or val.get("action")
+        )
+        if ts and event:
+            return f"{ts} — {event}"
+        if event:
+            return str(event)
+        return " — ".join(str(v) for v in val.values() if v)[:400]
+    return str(val).strip()
+
+
+def _as_str_list(val: Any) -> list[str]:
+    if not val:
+        return []
+    if isinstance(val, str):
+        return [val] if val.strip() else []
+    if isinstance(val, dict):
+        text = _as_text(val)
+        return [text] if text else []
+    out: list[str] = []
+    for item in val:
+        text = _as_text(item)
+        if text:
+            out.append(text)
+    return out
+
+
+def _as_int(val: Any, default: int) -> int:
+    try:
+        return int(float(str(val).strip().split()[0]))
+    except Exception:  # noqa: BLE001
+        return default
 
 
 async def analyze_wso2(
@@ -212,26 +262,26 @@ async def analyze_wso2(
                     id=uuid.uuid4().hex[:10],
                     log_type=_log_type(item.get("log_type")),
                     severity=_sev(item.get("severity")),
-                    error=item.get("error") or "Error",
-                    description=item.get("description") or "",
-                    possible_occurrence=item.get("possible_occurrence") or "",
-                    remedial_actions=list(item.get("remedial_actions") or []),
-                    wso2_doc_refs=list(item.get("wso2_doc_refs") or [WSO2_DOC]),
-                    evidence=item.get("evidence"),
-                    source_file=item.get("source_file"),
-                    affected_components=list(item.get("affected_components") or []),
-                    logger=item.get("logger"),
-                    subsystem=item.get("subsystem"),
-                    functional_error=item.get("functional_error"),
-                    exception_type=item.get("exception_type"),
-                    error_source=item.get("error_source"),
-                    va_correlation=item.get("va_correlation"),
-                    confidence_score=max(0, min(100, int(item.get("confidence_score") or 70))),
-                    technical_name=item.get("technical_name"),
-                    plain_meaning=item.get("plain_meaning"),
-                    call_flow=list(item.get("call_flow") or []),
-                    config_checks=list(item.get("config_checks") or []),
-                    impacted_customers=list(item.get("impacted_customers") or []),
+                    error=_as_text(item.get("error")) or "Error",
+                    description=_as_text(item.get("description")),
+                    possible_occurrence=_as_text(item.get("possible_occurrence")),
+                    remedial_actions=_as_str_list(item.get("remedial_actions")),
+                    wso2_doc_refs=_as_str_list(item.get("wso2_doc_refs") or [WSO2_DOC]),
+                    evidence=_as_text(item.get("evidence")) or None,
+                    source_file=_as_text(item.get("source_file")) or None,
+                    affected_components=_as_str_list(item.get("affected_components")),
+                    logger=_as_text(item.get("logger")) or None,
+                    subsystem=_as_text(item.get("subsystem")) or None,
+                    functional_error=_as_text(item.get("functional_error")) or None,
+                    exception_type=_as_text(item.get("exception_type")) or None,
+                    error_source=_as_text(item.get("error_source")) or None,
+                    va_correlation=_as_text(item.get("va_correlation")) or None,
+                    confidence_score=max(0, min(100, _as_int(item.get("confidence_score"), 70))),
+                    technical_name=_as_text(item.get("technical_name")) or None,
+                    plain_meaning=_as_text(item.get("plain_meaning")) or None,
+                    call_flow=_as_str_list(item.get("call_flow")),
+                    config_checks=_as_str_list(item.get("config_checks")),
+                    impacted_customers=_as_str_list(item.get("impacted_customers")),
                     failure_count=item.get("failure_count"),
                     failure_total=item.get("failure_total"),
                     impact_pct=item.get("impact_pct"),
@@ -365,6 +415,26 @@ async def analyze_wso2(
             data["primary_root_cause"] = errors[0].error
 
     customer_summary = log_evidence.get("impacted_customers_summary") or {}
+    file_stats = build_file_stats(
+        log_evidence.get("scan_summaries") or [],
+        context.ip_addresses,
+    )
+    log_evidence["file_stats"] = file_stats
+    if file_stats and data.get("executive_summary"):
+        worst = max(file_stats, key=lambda r: float(r.get("error_pct") or 0))
+        if "error rate" not in (data.get("executive_summary") or "").lower():
+            bits = [
+                f"{r.get('display_name') or r.get('file')} @ {r.get('ip') or 'IP n/a'}: "
+                f"{int(r.get('total_errors') or 0)}/{int(r.get('total_transactions') or 0)} "
+                f"({r.get('error_pct')}%)"
+                for r in sorted(file_stats, key=lambda x: -float(x.get("error_pct") or 0))[:4]
+            ]
+            data["executive_summary"] = (
+                f"{data['executive_summary'].rstrip()} "
+                f"Per-node error rates: {'; '.join(bits)}. Highest: "
+                f"{worst.get('display_name')} {worst.get('error_pct')}%."
+            )
+
     if customer_summary.get("headline") and data.get("executive_summary"):
         # Append a clear who-is-hit line when missing
         if "Impacted customers" not in (data.get("executive_summary") or ""):
@@ -375,20 +445,22 @@ async def analyze_wso2(
 
     va_maps: list[Wso2VaMapping] = []
     for row in data.get("va_correlations") or []:
+        if not isinstance(row, dict):
+            continue
         try:
             va_maps.append(
                 Wso2VaMapping(
-                    va_finding=row.get("va_finding") or "",
-                    related_log_errors=list(row.get("related_log_errors") or []),
-                    correlation_notes=row.get("correlation_notes") or "",
-                    risk=_sev(row.get("risk")),
-                    recommended_actions=list(row.get("recommended_actions") or []),
+                    va_finding=_as_text(row.get("va_finding")),
+                    related_log_errors=_as_str_list(row.get("related_log_errors")),
+                    correlation_notes=_as_text(row.get("correlation_notes")),
+                    risk=_sev(_as_text(row.get("risk")) or None),
+                    recommended_actions=_as_str_list(row.get("recommended_actions")),
                 )
             )
         except Exception:  # noqa: BLE001
             continue
 
-    docs = list(data.get("doc_references") or [WSO2_DOC])
+    docs = _as_str_list(data.get("doc_references") or [WSO2_DOC])
     if WSO2_DOC not in docs:
         docs.insert(0, WSO2_DOC)
 
@@ -396,10 +468,10 @@ async def analyze_wso2(
         id=uuid.uuid4().hex[:12],
         job_id=job_id,
         created_at=datetime.now(timezone.utc),
-        executive_summary=data.get("executive_summary") or "",
-        health_score=max(0, min(100, int(data.get("health_score") or 50))),
-        risk_level=_sev(data.get("risk_level")),
-        primary_root_cause=data.get("primary_root_cause"),
+        executive_summary=_as_text(data.get("executive_summary")),
+        health_score=max(0, min(100, _as_int(data.get("health_score"), 50))),
+        risk_level=_sev(_as_text(data.get("risk_level")) or None),
+        primary_root_cause=_as_text(data.get("primary_root_cause")) or None,
         context=context,
         log_coverage={
             "coverage": log_evidence.get("coverage"),
@@ -408,13 +480,14 @@ async def analyze_wso2(
             "scan_summaries": log_evidence.get("scan_summaries"),
             "priority_failure_findings": (log_evidence.get("priority_failure_findings") or [])[:80],
             "impacted_customers_summary": log_evidence.get("impacted_customers_summary"),
+            "file_stats": log_evidence.get("file_stats") or [],
             "analysis_hint": log_evidence.get("analysis_hint"),
         },
         errors=errors,
         va_correlations=va_maps,
-        correlated_timeline=list(data.get("correlated_timeline") or []),
-        quick_wins=list(data.get("quick_wins") or []),
-        roadmap=list(data.get("roadmap") or []),
+        correlated_timeline=_as_str_list(data.get("correlated_timeline")),
+        quick_wins=_as_str_list(data.get("quick_wins")),
+        roadmap=_as_str_list(data.get("roadmap")),
         doc_references=docs,
         raw_ai_notes=f"llm:ok wso2 model={s.llm_model}",
     )

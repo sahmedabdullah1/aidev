@@ -176,6 +176,59 @@ function CustomerImpactBlock({ coverage }: { coverage: Record<string, unknown> }
   );
 }
 
+function FileStatsBlock({ coverage }: { coverage: Record<string, unknown> }) {
+  const rows = (coverage?.file_stats || []) as {
+    file?: string;
+    display_name?: string;
+    ip?: string | null;
+    product?: string;
+    log_type?: string;
+    total_transactions?: number;
+    total_success?: number;
+    total_errors?: number;
+    error_pct?: number;
+  }[];
+  if (!rows.length) return null;
+  const fmt = (n?: number) => (n ?? 0).toLocaleString();
+  return (
+    <div className="section file-stats">
+      <h4>Per log file</h4>
+      <p className="empty">Each file is mapped to one node IP — total transactions, success, errors, and error %.</p>
+      <div className="file-stat-grid">
+        {rows.map((row) => (
+          <article className="file-stat-card" key={row.file || row.display_name}>
+            <div className="file-stat-head">
+              <strong>{row.display_name || row.file}</strong>
+              <code>{row.ip || "IP not mapped"}</code>
+            </div>
+            <p className="empty">
+              {row.product}
+              {row.log_type ? ` · ${row.log_type}` : ""}
+            </p>
+            <ul className="file-stat-metrics">
+              <li>
+                <span>Total transac</span>
+                <strong>{fmt(row.total_transactions)}</strong>
+              </li>
+              <li>
+                <span>Success</span>
+                <strong>{fmt(row.total_success)}</strong>
+              </li>
+              <li>
+                <span>Error</span>
+                <strong>{fmt(row.total_errors)}</strong>
+              </li>
+            </ul>
+            <div className="file-stat-pct">
+              Error rate <strong>{Number(row.error_pct || 0).toFixed(2)}%</strong>
+            </div>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Wso2ErrorCard({ e }: { e: Wso2ErrorItem }) {
   return (
     <article className={`finding ${e.severity}`}>
@@ -585,6 +638,11 @@ export default function App() {
             </div>
           )}
           {!isAnalyzing && progressLabel && <p className="empty">{progressLabel}</p>}
+          {activeJob?.status === "failed" && activeJob.error && (
+            <p className="error">
+              {activeJob.error.split("\n").find((line) => line.trim()) || activeJob.error}
+            </p>
+          )}
           {error && <p className="error">{error}</p>}
         </form>
       </section>
@@ -639,6 +697,7 @@ export default function App() {
                 </p>
               )}
               <CustomerImpactBlock coverage={report.log_coverage} />
+              <FileStatsBlock coverage={report.log_coverage} />
               {!!report.doc_references?.length && (
                 <p className="empty">
                   Docs:{" "}

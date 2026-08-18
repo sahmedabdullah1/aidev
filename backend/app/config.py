@@ -21,12 +21,12 @@ class Settings(BaseSettings):
     api_port: int = 8000
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
 
-    # OpenAI-compatible provider — default: Groq free tier (Llama 3.3 70B)
+    # OpenAI-compatible provider — default: Groq free tier (GPT-OSS 120B)
     # Get a free key: https://console.groq.com/keys
     llm_api_key: str = ""
     groq_api_key: str = ""  # alias — used when llm_api_key is empty
     llm_base_url: str = "https://api.groq.com/openai/v1"
-    llm_model: str = "llama-3.3-70b-versatile"
+    llm_model: str = "openai/gpt-oss-120b"
     llm_temperature: float = 0.1
     llm_max_tokens: int = 6000
     llm_evidence_max_chars: int = 28000

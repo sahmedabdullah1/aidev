@@ -193,7 +193,7 @@ Best fit for AI DevOps: open-source model, free API key, fast inference, strong 
 ```env
 LLM_API_KEY=gsk_your_key_here
 LLM_BASE_URL=https://api.groq.com/openai/v1
-LLM_MODEL=llama-3.3-70b-versatile
+LLM_MODEL=openai/gpt-oss-120b
 ```
 
 3. Verify:
@@ -211,8 +211,8 @@ Without a key, investigations **fail** with a clear error (they will not invent 
 
 | Option | Config |
 |---|---|
-| Groq Llama 8B (faster, higher free limits) | `LLM_MODEL=llama-3.1-8b-instant` |
-| Groq Llama 4 Scout (more context) | `LLM_MODEL=meta-llama/llama-4-scout-17b-16e-instruct` |
+| Groq GPT-OSS 20B (faster) | `LLM_MODEL=openai/gpt-oss-20b` |
+| Groq Qwen 3.6 27B | `LLM_MODEL=qwen/qwen3.6-27b` |
 | Local Ollama | `LLM_BASE_URL=http://127.0.0.1:11434/v1` · `LLM_API_KEY=ollama` · `LLM_MODEL=llama3.1` |
 ## Project layout
 

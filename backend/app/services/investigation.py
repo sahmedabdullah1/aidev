@@ -170,7 +170,7 @@ class InvestigationService:
             await self._update(
                 job_id,
                 status=JobStatus.failed.value,
-                progress="Failed",
+                progress=str(exc).split("\n", 1)[0][:240] or "Failed",
                 error=f"{exc}\n{traceback.format_exc()[-1500:]}",
             )
 
@@ -262,7 +262,7 @@ class InvestigationService:
             await self._update(
                 job_id,
                 status=JobStatus.failed.value,
-                progress="Failed",
+                progress=str(exc).split("\n", 1)[0][:240] or "Failed",
                 error=f"{exc}\n{traceback.format_exc()[-1500:]}",
             )
         finally:
