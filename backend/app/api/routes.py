@@ -26,9 +26,13 @@ def _settings():
 
 
 def _job_to_response(row) -> JobResponse:
+    try:
+        status_enum = JobStatus(row.status)
+    except Exception:
+        status_enum = JobStatus.cancelled if "cancel" in str(row.status).lower() or "stop" in str(row.status).lower() else JobStatus.failed
     return JobResponse(
         id=row.id,
-        status=JobStatus(row.status),
+        status=status_enum,
         repo_url=row.repo_url,
         branch=row.branch,
         created_at=row.created_at,
@@ -145,6 +149,15 @@ async def get_job(job_id: str) -> JobResponse:
     return _job_to_response(row)
 
 
+@router.post("/jobs/{job_id}/stop", response_model=JobResponse)
+@router.post("/jobs/{job_id}/cancel", response_model=JobResponse)
+async def stop_job(job_id: str) -> JobResponse:
+    row = await investigation_service.cancel_job(job_id)
+    if not row:
+        raise HTTPException(404, "Job not found")
+    return _job_to_response(row)
+
+
 @router.get("/reports", response_model=ReportListResponse)
 async def list_reports() -> ReportListResponse:
     rows = await investigation_service.list_reports()
@@ -223,13 +236,38 @@ async def wso2_analyze(
     upload_dir = settings.uploads_dir / "wso2"
     upload_dir.mkdir(parents=True, exist_ok=True)
     saved: list[str] = []
-    for f in log_files:
-        dest = upload_dir / f"{uuid_name(f.filename)}"
-        content = await f.read()
-        is_hprof = str(f.filename or "").lower().endswith(".hprof")
-        limit = 50_000_000 if is_hprof else max(settings.max_log_bytes, getattr(settings, "wso2_max_log_bytes", 40_000_000))
-        dest.write_bytes(content[:limit])
+    log_limit = max(settings.max_log_bytes, getattr(settings, "wso2_max_log_bytes", 40_000_000))
+
+    def _save_bytes(name: str, data: bytes) -> None:
+        import zipfile as _zip
+        fname = (name or "upload.log").replace(" ", "_")
+        is_hprof = fname.lower().endswith(".hprof")
+        limit = 50_000_000 if is_hprof else log_limit
+        # If it looks like a ZIP, expand it in place
+        if fname.lower().endswith(".zip") or data[:2] == b"PK":
+            try:
+                import io
+                with _zip.ZipFile(io.BytesIO(data)) as zf:
+                    for member in zf.infolist():
+                        if member.is_dir():
+                            continue
+                        mname = member.filename.split("/")[-1]
+                        if not mname or mname.startswith("."):
+                            continue
+                        mdata = zf.read(member)[:limit]
+                        dest = upload_dir / uuid_name(mname)
+                        dest.write_bytes(mdata)
+                        saved.append(str(dest))
+                return
+            except Exception:  # noqa: BLE001
+                pass  # fall through to save raw
+        dest = upload_dir / uuid_name(fname)
+        dest.write_bytes(data[:limit])
         saved.append(str(dest))
+
+    for f in log_files:
+        content = await f.read()
+        _save_bytes(f.filename or "upload.log", content)
 
     va_path = None
     if va_report and va_report.filename:

@@ -5,7 +5,8 @@ export type JobStatus =
   | "collecting"
   | "analyzing"
   | "completed"
-  | "failed";
+  | "failed"
+  | "cancelled";
 
 export interface Job {
   id: string;
@@ -181,6 +182,7 @@ export const api = {
   },
   jobs: () => req<{ jobs: Job[] }>("/api/jobs"),
   job: (id: string) => req<Job>(`/api/jobs/${id}`),
+  stopJob: (id: string) => req<Job>(`/api/jobs/${id}/stop`, { method: "POST" }),
   reports: () => req<{ reports: DevOpsReport[] }>("/api/reports"),
   report: (id: string) => req<DevOpsReport | Wso2Report>(`/api/reports/${id}`),
   downloadUrl: (id: string, fmt: "md" | "html" | "json") => `${API}/api/reports/${id}/download/${fmt}`,

@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   DevOpsReport,
@@ -90,7 +90,7 @@ function usePollingJob(jobId: string | null) {
         const j = await api.job(jobId);
         if (!alive) return;
         setJob(j);
-        if (j.status === "completed" || j.status === "failed") return;
+        if (j.status === "completed" || j.status === "failed" || j.status === "cancelled") return;
         window.setTimeout(tick, 1500);
       } catch {
         if (alive) window.setTimeout(tick, 2500);
@@ -183,17 +183,23 @@ function FileStatsBlock({ coverage }: { coverage: Record<string, unknown> }) {
     ip?: string | null;
     product?: string;
     log_type?: string;
+    is_simosa?: boolean;
+    app?: string;
     total_transactions?: number;
     total_success?: number;
     total_errors?: number;
     error_pct?: number;
+    time_range?: string;
+    top_status_codes?: { code: string; count: number }[];
+    top_failure_messages?: { message: string; count: number }[];
+    top_apis?: { api: string; count: number }[];
   }[];
   if (!rows.length) return null;
   const fmt = (n?: number) => (n ?? 0).toLocaleString();
   return (
     <div className="section file-stats">
       <h4>Per log file</h4>
-      <p className="empty">Each file is mapped to one node IP — total transactions, success, errors, and error %.</p>
+      <p className="empty">Each file mapped to one node IP — total transactions, success, errors, and error %.</p>
       <div className="file-stat-grid">
         {rows.map((row) => (
           <article className="file-stat-card" key={row.file || row.display_name}>
@@ -202,8 +208,10 @@ function FileStatsBlock({ coverage }: { coverage: Record<string, unknown> }) {
               <code>{row.ip || "IP not mapped"}</code>
             </div>
             <p className="empty">
-              {row.product}
-              {row.log_type ? ` · ${row.log_type}` : ""}
+              {row.is_simosa ? <span className="badge-simosa">SIMOSA</span> : null}
+              {row.app && row.app !== "SIMOSA" ? `${row.app} · ` : ""}
+              {row.product}{row.log_type ? ` · ${row.log_type}` : ""}
+              {row.time_range ? <span className="stat-timerange"> · {row.time_range}</span> : null}
             </p>
             <ul className="file-stat-metrics">
               <li>
@@ -212,16 +220,51 @@ function FileStatsBlock({ coverage }: { coverage: Record<string, unknown> }) {
               </li>
               <li>
                 <span>Success</span>
-                <strong>{fmt(row.total_success)}</strong>
+                <strong className="ok-val">{fmt(row.total_success)}</strong>
               </li>
               <li>
-                <span>Error</span>
-                <strong>{fmt(row.total_errors)}</strong>
+                <span>Error (KO)</span>
+                <strong className="err-val">{fmt(row.total_errors)}</strong>
               </li>
             </ul>
             <div className="file-stat-pct">
-              Error rate <strong>{Number(row.error_pct || 0).toFixed(2)}%</strong>
+              Error rate <strong
+                style={{ color: Number(row.error_pct || 0) > 10 ? "var(--crit)" : Number(row.error_pct || 0) > 3 ? "var(--high)" : "inherit" }}
+              >{Number(row.error_pct || 0).toFixed(2)}%</strong>
             </div>
+            {row.top_status_codes && row.top_status_codes.length > 0 && (
+              <div className="stat-breakdown">
+                <span className="stat-breakdown-title">Top KO codes</span>
+                <ul>
+                  {row.top_status_codes.slice(0, 4).map((c) => (
+                    <li key={c.code}><code>{c.code}</code> × {fmt(c.count)}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {row.top_failure_messages && row.top_failure_messages.length > 0 && (
+              <div className="stat-breakdown">
+                <span className="stat-breakdown-title">Top failure reasons</span>
+                <ul>
+                  {row.top_failure_messages.slice(0, 3).map((m) => (
+                    <li key={m.message} title={m.message}>
+                      {m.message.length > 48 ? m.message.slice(0, 48) + "…" : m.message}
+                      {" "}× {fmt(m.count)}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {row.top_apis && row.top_apis.length > 0 && (
+              <div className="stat-breakdown">
+                <span className="stat-breakdown-title">APIs</span>
+                <ul>
+                  {row.top_apis.slice(0, 4).map((a) => (
+                    <li key={a.api}><code>{a.api}</code> × {fmt(a.count)}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </article>
         ))}
       </div>
@@ -464,8 +507,28 @@ export default function App() {
   const isAnalyzing = useMemo(() => {
     if (busy) return true;
     if (!activeJob) return false;
-    return !["completed", "failed"].includes(activeJob.status);
+    return !["completed", "failed", "cancelled"].includes(activeJob.status);
   }, [busy, activeJob]);
+
+  const [isStopping, setIsStopping] = useState(false);
+
+  const handleStopJob = async () => {
+    const targetId = activeJobId || activeJob?.id;
+    if (!targetId) {
+      setBusy(false);
+      return;
+    }
+    try {
+      setIsStopping(true);
+      await api.stopJob(targetId);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsStopping(false);
+      setBusy(false);
+    }
+  };
 
   const analyzingMessage = useMemo(() => {
     if (busy && !activeJobId) {
@@ -478,6 +541,47 @@ export default function App() {
     if (activeJob?.status === "cloning") return "Cloning repository…";
     return mode === "wso2" ? "Analyzing WSO2 logs…" : "Investigating…";
   }, [busy, activeJobId, activeJob, mode]);
+
+  // Progress bar — target % per status, auto-advance within each stage
+  const [barPct, setBarPct] = useState(0);
+  const barPctRef = useRef(0);
+
+  useEffect(() => {
+    const status = activeJob?.status ?? (busy ? "queued" : null);
+    const done = activeJob?.status === "completed";
+    const failed = activeJob?.status === "failed";
+    const cancelled = activeJob?.status === "cancelled";
+
+    if (!isAnalyzing && !done && !failed && !cancelled) {
+      setBarPct(0);
+      barPctRef.current = 0;
+      return;
+    }
+    if (done) { setBarPct(100); barPctRef.current = 100; return; }
+    if (failed || cancelled) { setBarPct(barPctRef.current || 50); return; }
+
+    // Target ceilings per stage
+    const ceiling =
+      status === "queued" ? 12 :
+      status === "collecting" ? 45 :
+      status === "analyzing" ? 90 :
+      status === "cloning" ? 20 : 10;
+
+    const tick = () => {
+      setBarPct((prev) => {
+        if (prev >= ceiling) return prev;
+        // Ease in to ceiling — fast at first, slow near limit
+        const gap = ceiling - prev;
+        const step = Math.max(0.15, gap * 0.04);
+        const next = Math.min(prev + step, ceiling);
+        barPctRef.current = next;
+        return next;
+      });
+    };
+
+    const id = setInterval(tick, 300);
+    return () => clearInterval(id);
+  }, [isAnalyzing, activeJob?.status, busy]);
 
   return (
     <div className="app">
@@ -623,21 +727,88 @@ export default function App() {
                 "Investigate repo"
               )}
             </button>
+            {isAnalyzing && (
+              <button
+                className="danger"
+                type="button"
+                onClick={handleStopJob}
+                disabled={isStopping}
+                title="Stop current analysis"
+              >
+                {isStopping ? (
+                  <>
+                    <span className="btn-spinner" aria-hidden="true" />
+                    Stopping…
+                  </>
+                ) : (
+                  "Stop analysis"
+                )}
+              </button>
+            )}
             <button className="ghost" type="button" onClick={() => refresh()} disabled={isAnalyzing}>
               Refresh
             </button>
           </div>
+          {(isAnalyzing || activeJob?.status === "completed" || activeJob?.status === "failed" || activeJob?.status === "cancelled") && (
+            <div
+              className={`progress-bar-wrap${
+                activeJob?.status === "completed"
+                  ? " done"
+                  : activeJob?.status === "failed"
+                  ? " failed"
+                  : activeJob?.status === "cancelled"
+                  ? " cancelled"
+                  : ""
+              }`}
+              role="progressbar"
+              aria-valuenow={Math.round(barPct)}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
+              <div className="progress-bar-track">
+                <div
+                  className="progress-bar-fill"
+                  style={{ width: `${barPct}%` }}
+                />
+              </div>
+              <span className="progress-bar-label">
+                {activeJob?.status === "completed"
+                  ? "✓ Analysis complete"
+                  : activeJob?.status === "failed"
+                  ? "Analysis failed"
+                  : activeJob?.status === "cancelled"
+                  ? "✕ Analysis stopped"
+                  : `${Math.round(barPct)}%`}
+              </span>
+            </div>
+          )}
           {isAnalyzing && (
             <div className="analyze-loader" role="status" aria-live="polite">
               <span className="analyze-spinner" aria-hidden="true" />
-              <div>
+              <div className="analyze-loader-content">
                 <strong>Analyzing{mode === "wso2" ? " WSO2 logs" : ""}…</strong>
                 <p>{analyzingMessage}</p>
                 {progressLabel && <p className="analyze-loader-meta">{progressLabel}</p>}
               </div>
+              <button
+                className="stop-btn"
+                type="button"
+                onClick={handleStopJob}
+                disabled={isStopping}
+                title="Stop analysis"
+              >
+                {isStopping ? "Stopping…" : "Stop"}
+              </button>
             </div>
           )}
-          {!isAnalyzing && progressLabel && <p className="empty">{progressLabel}</p>}
+          {!isAnalyzing && activeJob?.status === "completed" && (
+            <p className="empty">{progressLabel}</p>
+          )}
+          {!isAnalyzing && activeJob?.status === "cancelled" && (
+            <p className="empty" style={{ color: "var(--high, #c45c26)" }}>
+              {progressLabel || "Analysis stopped by user."}
+            </p>
+          )}
           {activeJob?.status === "failed" && activeJob.error && (
             <p className="error">
               {activeJob.error.split("\n").find((line) => line.trim()) || activeJob.error}
@@ -668,10 +839,19 @@ export default function App() {
           {isAnalyzing && !report && (
             <div className="analyze-loader report-loader" role="status" aria-live="polite">
               <span className="analyze-spinner" aria-hidden="true" />
-              <div>
+              <div className="analyze-loader-content">
                 <strong>Building investigation report…</strong>
                 <p>{analyzingMessage}</p>
               </div>
+              <button
+                className="stop-btn"
+                type="button"
+                onClick={handleStopJob}
+                disabled={isStopping}
+                title="Stop analysis"
+              >
+                {isStopping ? "Stopping…" : "Stop"}
+              </button>
             </div>
           )}
           {!report && !isAnalyzing && <p className="empty">Select a completed investigation.</p>}

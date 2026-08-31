@@ -172,6 +172,12 @@ def build_file_stats(
             "log_type": row.get("log_type") or "wso2carbon",
             "product": row.get("product") or "APIM/MI",
             "ip_mentions": row.get("ip_mentions") or {},
+            "is_simosa": bool(row.get("is_simosa")),
+            "app": row.get("app"),
+            "time_range": row.get("time_range"),
+            "top_status_codes": row.get("top_status_codes"),
+            "top_failure_messages": row.get("top_failure_messages"),
+            "top_apis": row.get("top_apis"),
             **traffic,
         }
         stats.append(item)

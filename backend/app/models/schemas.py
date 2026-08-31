@@ -12,6 +12,7 @@ class JobStatus(str, Enum):
     analyzing = "analyzing"
     completed = "completed"
     failed = "failed"
+    cancelled = "cancelled"
 
 
 class Severity(str, Enum):

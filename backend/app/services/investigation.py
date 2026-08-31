@@ -26,6 +26,7 @@ class InvestigationService:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
         self._tasks: set[asyncio.Task] = set()
+        self._job_tasks: dict[str, asyncio.Task] = {}
 
     async def enqueue(
         self,
@@ -74,7 +75,13 @@ class InvestigationService:
 
         task = asyncio.create_task(self._run(job_id), name=f"job-{job_id}")
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        self._job_tasks[job_id] = task
+
+        def _cleanup(t: asyncio.Task) -> None:
+            self._tasks.discard(t)
+            self._job_tasks.pop(job_id, None)
+
+        task.add_done_callback(_cleanup)
         return job_id
 
     async def enqueue_wso2(
@@ -111,7 +118,13 @@ class InvestigationService:
 
         task = asyncio.create_task(self._run_wso2(job_id), name=f"wso2-{job_id}")
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        self._job_tasks[job_id] = task
+
+        def _cleanup(t: asyncio.Task) -> None:
+            self._tasks.discard(t)
+            self._job_tasks.pop(job_id, None)
+
+        task.add_done_callback(_cleanup)
         return job_id
 
     async def _run_wso2(self, job_id: str) -> None:
@@ -166,6 +179,14 @@ class InvestigationService:
                     job.report_id = report.id
                     job.updated_at = utcnow()
                 await session.commit()
+        except asyncio.CancelledError:
+            await self._update(
+                job_id,
+                status=JobStatus.cancelled.value,
+                progress="Stopped by user",
+                error=None,
+            )
+            raise
         except Exception as exc:  # noqa: BLE001
             await self._update(
                 job_id,
@@ -258,6 +279,14 @@ class InvestigationService:
                     job.report_id = report.id
                     job.updated_at = utcnow()
                 await session.commit()
+        except asyncio.CancelledError:
+            await self._update(
+                job_id,
+                status=JobStatus.cancelled.value,
+                progress="Stopped by user",
+                error=None,
+            )
+            raise
         except Exception as exc:  # noqa: BLE001
             await self._update(
                 job_id,
@@ -269,6 +298,26 @@ class InvestigationService:
             # keep workspace for debugging in development; prune in production
             if self.settings.app_env == "production" and work_dir.exists():
                 shutil.rmtree(work_dir, ignore_errors=True)
+
+    async def cancel_job(self, job_id: str) -> JobRow | None:
+        task = self._job_tasks.get(job_id)
+        if task and not task.done():
+            task.cancel()
+        async with SessionLocal() as session:
+            row = await session.get(JobRow, job_id)
+            if not row:
+                return None
+            if row.status not in {
+                JobStatus.completed.value,
+                JobStatus.failed.value,
+                JobStatus.cancelled.value,
+            }:
+                row.status = JobStatus.cancelled.value
+                row.progress = "Stopped by user"
+                row.error = None
+                row.updated_at = utcnow()
+                await session.commit()
+            return row
 
     async def get_job(self, job_id: str) -> JobRow | None:
         async with SessionLocal() as session:

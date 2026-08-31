@@ -11,6 +11,7 @@ from app.config import Settings
 from app.collectors.wso2_ei_mi import parse_carbon_entries
 from app.collectors.wso2_log_scan import scan_carbon_file, scan_http_access_file
 from app.collectors.wso2_file_stats import display_name, traffic_tuple
+from app.collectors.wso2_simosa import is_simosa_log, scan_simosa_file
 from app.models.wso2_schemas import Wso2LogType
 
 LOG_TYPE_PATTERNS: list[tuple[Wso2LogType, re.Pattern[str]]] = [
@@ -293,6 +294,64 @@ def collect_wso2_logs(files: list[Path], settings: Settings) -> dict[str, Any]:
         else:
             # Peek head for type detection only
             sample = _read_text(path, min(8000, max_bytes))
+
+            # SIMOSA / JAZZADVANCE transaction log (grep extract or native carbon)
+            if is_simosa_log(path, sample):
+                log_type = Wso2LogType.wso2carbon
+                scanned = scan_simosa_file(path, max_read_bytes=max_bytes)
+                parsed = {
+                    "log_type": "wso2carbon",
+                    "is_simosa": True,
+                    "total_transactions": scanned["total_transactions"],
+                    "total_success": scanned["total_success"],
+                    "total_errors": scanned["total_errors"],
+                    "error_pct": scanned["error_pct"],
+                    "top_status_codes": scanned.get("top_status_codes"),
+                    "top_failure_messages": scanned.get("top_failure_messages"),
+                    "top_apis": scanned.get("top_apis"),
+                    "failure_findings": scanned.get("failure_findings") or [],
+                    "structured_events": scanned.get("failure_findings") or [],
+                    "time_range": scanned.get("time_range"),
+                }
+                all_failure_findings.extend(scanned.get("failure_findings") or [])
+                scan_summaries.append({
+                    "file": name,
+                    "display_name": display_name(name),
+                    "log_type": log_type.value,
+                    "product": "MI",
+                    "is_simosa": True,
+                    "app": "SIMOSA",
+                    "failure_count_raw": scanned.get("failure_count_raw"),
+                    "failure_count_unique": scanned.get("failure_count_unique"),
+                    "signals": scanned.get("signals"),
+                    "ip_mentions": scanned.get("ip_mentions"),
+                    "scanned_fully": scanned.get("scanned_fully"),
+                    "size_bytes": scanned.get("size_bytes"),
+                    "total_transactions": scanned.get("total_transactions"),
+                    "total_success": scanned.get("total_success"),
+                    "total_errors": scanned.get("total_errors"),
+                    "error_pct": scanned.get("error_pct"),
+                    "traffic": scanned.get("traffic"),
+                    "top_status_codes": scanned.get("top_status_codes"),
+                    "top_failure_messages": scanned.get("top_failure_messages"),
+                    "top_apis": scanned.get("top_apis"),
+                    "time_range": scanned.get("time_range"),
+                })
+                entry = {
+                    "filename": name,
+                    "path": str(path),
+                    "log_type": log_type.value,
+                    "bytes": path.stat().st_size,
+                    "meta": LOG_META.get(log_type, {}),
+                    "parsed": parsed,
+                    "sample_head": sample[:800] if sample else None,
+                }
+                by_type.setdefault(log_type.value, []).append(entry)
+                if log_type.value in coverage:
+                    coverage[log_type.value]["present"] = True
+                    coverage[log_type.value]["files"] = coverage[log_type.value].get("files", []) + [name]
+                continue
+
             log_type = detect_log_type(name, sample)
             # Carbon / unknown text logs: full-file error-first scan (critical fix)
             if log_type in {Wso2LogType.wso2carbon, Wso2LogType.unknown} or "wso2carbon" in name.lower():
