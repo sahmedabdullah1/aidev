@@ -39,7 +39,8 @@ body {
 
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 
@@ -515,7 +516,8 @@ label {
 }
 
 input,
-textarea {
+textarea,
+select {
   width: 100%;
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.85);
@@ -525,7 +527,8 @@ textarea {
 }
 
 input:focus,
-textarea:focus {
+textarea:focus,
+select:focus {
   outline: 2px solid rgba(15, 122, 90, 0.35);
   border-color: var(--accent);
 }
@@ -1014,3 +1017,37 @@ label.check input {
   padding: 1px 5px;
   border-radius: 4px;
 }
+
+.live-wrap {
+  margin-bottom: 28px;
+}
+
+.live-board-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.live-kpis {
+  margin: 12px 0;
+}
+
+.live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  background: var(--muted);
+}
+
+.live-dot.ok {
+  background: var(--accent);
+}
+
+.live-dot.bad {
+  background: var(--crit);
+}
+

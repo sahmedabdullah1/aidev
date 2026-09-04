@@ -5,9 +5,11 @@ import {
   Finding,
   isWso2Report,
   Job,
+  LiveState,
   Wso2ErrorItem,
   Wso2Report,
 } from "./api";
+import { LiveSnapshotPanel } from "./LivePanel";
 import { ReportCharts } from "./ReportCharts";
 
 function ReportShareBar({ report }: { report: DevOpsReport | Wso2Report }) {
@@ -374,7 +376,7 @@ const LOG_HINTS = [
 ];
 
 export default function App() {
-  const [mode, setMode] = useState<"wso2" | "repo">("wso2");
+  const [mode, setMode] = useState<"wso2" | "repo" | "live">("wso2");
   const [repoUrl, setRepoUrl] = useState("");
   const [branch, setBranch] = useState("");
   const [notes, setNotes] = useState("");
@@ -399,6 +401,18 @@ export default function App() {
   const [environment, setEnvironment] = useState("prod");
   const [logFiles, setLogFiles] = useState<FileList | null>(null);
   const [vaFile, setVaFile] = useState<File | null>(null);
+  const [liveKind, setLiveKind] = useState<"ssh" | "local">("ssh");
+  const [liveHost, setLiveHost] = useState("");
+  const [livePort, setLivePort] = useState("22");
+  const [liveUser, setLiveUser] = useState("");
+  const [livePassword, setLivePassword] = useState("");
+  const [liveKey, setLiveKey] = useState("");
+  const [liveLogDir, setLiveLogDir] = useState("/opt/wso2am/repository/logs");
+  const [liveExtraDirs, setLiveExtraDirs] = useState("/opt/wso2mi/repository/logs");
+  const [livePoll, setLivePoll] = useState("5");
+  const [liveReportMins, setLiveReportMins] = useState("3");
+  const [liveState, setLiveState] = useState<LiveState | null>(null);
+  const [liveBusy, setLiveBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
@@ -447,13 +461,86 @@ export default function App() {
     }
   }, [activeJob?.status, activeJob?.report_id, activeJob?.progress]);
 
+  useEffect(() => {
+    api
+      .liveStatus()
+      .then((s) => {
+        if (s.connected) setLiveState(s);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  const lastLiveReportRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!liveState?.connected) return;
+    const es = new EventSource(api.liveStreamUrl());
+    es.onmessage = (ev) => {
+      try {
+        const next = JSON.parse(ev.data) as LiveState;
+        setLiveState(next);
+        if (next.last_job_id) setActiveJobId(next.last_job_id);
+        if (next.last_report_id && next.last_report_id !== lastLiveReportRef.current) {
+          lastLiveReportRef.current = next.last_report_id;
+          api.report(next.last_report_id).then(setReport).catch(() => undefined);
+        }
+      } catch {
+        /* ignore malformed frames */
+      }
+    };
+    return () => es.close();
+  }, [liveState?.connected]);
+
+  const parseMaybeJson = (raw: string) => {
+    const t = raw.trim();
+    if (!t) return undefined;
+    try {
+      return JSON.parse(t);
+    } catch {
+      return t;
+    }
+  };
+
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
     setBusy(true);
-    setReport(null);
+    if (mode !== "live") setReport(null);
     try {
-      if (mode === "wso2") {
+      if (mode === "live") {
+        const extra = liveExtraDirs
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .filter((d) => d !== liveLogDir.trim());
+        const mins = Number(liveReportMins) || 3;
+        const res = await api.liveConnect({
+          mode: liveKind,
+          host: liveKind === "ssh" ? liveHost.trim() : undefined,
+          port: Number(livePort) || 22,
+          username: liveKind === "ssh" ? liveUser.trim() : undefined,
+          password: livePassword || undefined,
+          private_key: liveKey.trim() || undefined,
+          log_dir: liveLogDir.trim(),
+          extra_log_dirs: extra,
+          poll_seconds: Number(livePoll) || 5,
+          report_interval_seconds: Math.max(30, mins * 60),
+          os_name: osName.trim() || undefined,
+          apim_version: apimVersion.trim() || undefined,
+          ei_version: eiVersion.trim() || undefined,
+          ip_addresses: parseMaybeJson(ipAddresses),
+          compute_allocation: parseMaybeJson(computeAlloc),
+          db_version: dbVersion.trim() || undefined,
+          notes: notes.trim() || undefined,
+          environment: environment.trim() || undefined,
+        });
+        const status = await api.liveStatus();
+        setLiveState(status);
+        setError(null);
+        if (res.message) {
+          /* connection message shown via live board */
+        }
+      } else if (mode === "wso2") {
         if (!logFiles || logFiles.length === 0) {
           throw new Error("Upload WSO2 log files (all 8 types when available)");
         }
@@ -504,11 +591,38 @@ export default function App() {
     return `${activeJob.status}${activeJob.progress ? ` — ${activeJob.progress}` : ""}`;
   }, [activeJob]);
 
+  const handleLiveDisconnect = async () => {
+    try {
+      setLiveBusy(true);
+      await api.liveDisconnect();
+      setLiveState({ ...(liveState as LiveState), connected: false });
+      setLiveState(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLiveBusy(false);
+    }
+  };
+
+  const handleLiveAnalyzeNow = async () => {
+    try {
+      setLiveBusy(true);
+      const res = await api.liveAnalyzeNow();
+      if (res.job_id) setActiveJobId(res.job_id);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLiveBusy(false);
+    }
+  };
+
   const isAnalyzing = useMemo(() => {
+    if (mode === "live") return busy;
     if (busy) return true;
     if (!activeJob) return false;
     return !["completed", "failed", "cancelled"].includes(activeJob.status);
-  }, [busy, activeJob]);
+  }, [busy, activeJob, mode]);
 
   const [isStopping, setIsStopping] = useState(false);
 
@@ -595,6 +709,9 @@ export default function App() {
               ? `AI ${health.llm_provider || "llm"} · ${health.llm_model || "ready"}`
               : "Add Groq API key"}
           </span>
+          {liveState?.connected && (
+            <span className="pill ok">Live · {liveState.host || "localhost"}</span>
+          )}
         </div>
       </header>
 
@@ -606,15 +723,18 @@ export default function App() {
           />
           <div className="hero-veil" />
           <div className="hero-overlay">
-            <p className="hero-kicker">APIM gateway · Micro Integrator · carbon log RCA</p>
+            <p className="hero-kicker">APIM gateway · Micro Integrator · live server RCA</p>
             <h2>WSO2 APIM + MI deep log analysis.</h2>
             <p>
-              Upload APIM and MI carbon logs, add infra context, and get LLM-only RCA with remediations,
-              severity charts, and shareable HTML reports.
+              Connect to the server that writes carbon and access logs, or upload a snapshot.
+              Live mode tails files, scrapes CPU/RAM, and regenerates AI reports as traffic arrives.
             </p>
             <div className="actions">
               <button type="button" className={mode === "wso2" ? "primary" : "ghost light"} onClick={() => setMode("wso2")}>
                 WSO2 APIM / MI
+              </button>
+              <button type="button" className={mode === "live" ? "primary" : "ghost light"} onClick={() => setMode("live")}>
+                Live server
               </button>
               <button type="button" className={mode === "repo" ? "primary" : "ghost light"} onClick={() => setMode("repo")}>
                 Git repo
@@ -625,10 +745,111 @@ export default function App() {
 
         <form className="panel form analyze-panel" onSubmit={onSubmit}>
           <div className="form-head">
-            <h3>{mode === "wso2" ? "Analyze APIM / MI logs" : "Investigate git repository"}</h3>
-            <p>{mode === "wso2" ? "Defaults are prefilled for your environment — upload logs and run." : "Paste a repo URL to investigate."}</p>
+            <h3>
+              {mode === "live"
+                ? "Connect to the log server"
+                : mode === "wso2"
+                  ? "Analyze APIM / MI logs"
+                  : "Investigate git repository"}
+            </h3>
+            <p>
+              {mode === "live"
+                ? "SSH into the host (or watch a local path) where wso2carbon.log and http_access.log are written. Stats update every few seconds; a full AI report runs on a timer."
+                : mode === "wso2"
+                  ? "Defaults are prefilled for your environment — upload logs and run."
+                  : "Paste a repo URL to investigate."}
+            </p>
           </div>
-          {mode === "wso2" ? (
+          {mode === "live" ? (
+            <>
+              <div className="row">
+                <label>
+                  Connection
+                  <select value={liveKind} onChange={(e) => setLiveKind(e.target.value as "ssh" | "local")}>
+                    <option value="ssh">SSH to external server</option>
+                    <option value="local">This machine (log directory)</option>
+                  </select>
+                </label>
+                <label>
+                  Environment
+                  <input placeholder="prod" value={environment} onChange={(e) => setEnvironment(e.target.value)} />
+                </label>
+              </div>
+              {liveKind === "ssh" && (
+                <>
+                  <div className="row">
+                    <label>
+                      Server host
+                      <input required placeholder="10.50.13.126 or apim.example.com" value={liveHost} onChange={(e) => setLiveHost(e.target.value)} />
+                    </label>
+                    <label>
+                      SSH port
+                      <input value={livePort} onChange={(e) => setLivePort(e.target.value)} />
+                    </label>
+                  </div>
+                  <div className="row">
+                    <label>
+                      SSH username
+                      <input required placeholder="wso2" value={liveUser} onChange={(e) => setLiveUser(e.target.value)} />
+                    </label>
+                    <label>
+                      SSH password (optional if using a key)
+                      <input type="password" autoComplete="off" value={livePassword} onChange={(e) => setLivePassword(e.target.value)} />
+                    </label>
+                  </div>
+                  <label>
+                    Private key (PEM paste, or local path like ~/.ssh/id_rsa)
+                    <textarea rows={3} placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" value={liveKey} onChange={(e) => setLiveKey(e.target.value)} />
+                  </label>
+                </>
+              )}
+              <div className="row">
+                <label>
+                  APIM log directory
+                  <input required placeholder="/opt/wso2am/repository/logs" value={liveLogDir} onChange={(e) => setLiveLogDir(e.target.value)} />
+                </label>
+                <label>
+                  Extra dirs (MI, comma-separated)
+                  <input placeholder="/opt/wso2mi/repository/logs" value={liveExtraDirs} onChange={(e) => setLiveExtraDirs(e.target.value)} />
+                </label>
+              </div>
+              <div className="row">
+                <label>
+                  Poll every (seconds)
+                  <input value={livePoll} onChange={(e) => setLivePoll(e.target.value)} />
+                </label>
+                <label>
+                  AI report every (minutes)
+                  <input value={liveReportMins} onChange={(e) => setLiveReportMins(e.target.value)} />
+                </label>
+              </div>
+              <div className="row">
+                <label>
+                  APIM version
+                  <input value={apimVersion} onChange={(e) => setApimVersion(e.target.value)} />
+                </label>
+                <label>
+                  MI / EI version
+                  <input value={eiVersion} onChange={(e) => setEiVersion(e.target.value)} />
+                </label>
+              </div>
+              <div className="row">
+                <label>
+                  IP addresses (APIM + MI)
+                  <input value={ipAddresses} onChange={(e) => setIpAddresses(e.target.value)} />
+                </label>
+                <label>
+                  Compute allocation
+                  <input value={computeAlloc} onChange={(e) => setComputeAlloc(e.target.value)} />
+                </label>
+              </div>
+              <label>
+                Notes
+                <textarea rows={2} placeholder="Grid region, known incident window…" value={notes} onChange={(e) => setNotes(e.target.value)} />
+              </label>
+              <p className="empty">Expected on the server: {LOG_HINTS.join(" · ")}</p>
+            </>
+          ) : mode === "wso2" ? (
             <>
               <div className="row">
                 <label>
@@ -686,7 +907,7 @@ export default function App() {
               </div>
               <label>
                 APIM + MI log files (upload carbon logs from both products / nodes)
-                <input type="file" multiple required onChange={(e) => setLogFiles(e.target.files)} />
+                <input type="file" multiple required={mode === "wso2"} onChange={(e) => setLogFiles(e.target.files)} />
               </label>
               <p className="empty">Expected: {LOG_HINTS.join(" · ")} — mix APIM and MI files in one run</p>
               <label>
@@ -715,19 +936,26 @@ export default function App() {
             </>
           )}
           <div className="actions">
-            <button className="primary" type="submit" disabled={isAnalyzing}>
+            <button className="primary" type="submit" disabled={isAnalyzing || liveBusy || (mode === "live" && !!liveState?.connected)}>
               {isAnalyzing ? (
                 <>
                   <span className="btn-spinner" aria-hidden="true" />
-                  Analyzing…
+                  {mode === "live" ? "Connecting…" : "Analyzing…"}
                 </>
+              ) : mode === "live" ? (
+                liveState?.connected ? "Connected" : "Connect live"
               ) : mode === "wso2" ? (
                 "Analyze WSO2 logs"
               ) : (
                 "Investigate repo"
               )}
             </button>
-            {isAnalyzing && (
+            {mode === "live" && liveState?.connected && (
+              <button className="danger" type="button" onClick={handleLiveDisconnect} disabled={liveBusy}>
+                Disconnect
+              </button>
+            )}
+            {isAnalyzing && mode !== "live" && (
               <button
                 className="danger"
                 type="button"
@@ -749,7 +977,7 @@ export default function App() {
               Refresh
             </button>
           </div>
-          {(isAnalyzing || activeJob?.status === "completed" || activeJob?.status === "failed" || activeJob?.status === "cancelled") && (
+          {(mode !== "live" && (isAnalyzing || activeJob?.status === "completed" || activeJob?.status === "failed" || activeJob?.status === "cancelled")) && (
             <div
               className={`progress-bar-wrap${
                 activeJob?.status === "completed"
@@ -782,7 +1010,7 @@ export default function App() {
               </span>
             </div>
           )}
-          {isAnalyzing && (
+          {isAnalyzing && mode !== "live" && (
             <div className="analyze-loader" role="status" aria-live="polite">
               <span className="analyze-spinner" aria-hidden="true" />
               <div className="analyze-loader-content">
@@ -818,6 +1046,16 @@ export default function App() {
         </form>
       </section>
 
+      {liveState?.connected && (
+        <section className="panel live-wrap">
+          <LiveSnapshotPanel
+            state={liveState}
+            onAnalyzeNow={handleLiveAnalyzeNow}
+            analyzingNow={liveBusy}
+          />
+        </section>
+      )}
+
       <div className="layout">
         <aside className="panel">
           <h3 className="section-title">Investigations</h3>
@@ -836,7 +1074,7 @@ export default function App() {
 
         <main className="panel">
           <h3 className="section-title">Report</h3>
-          {isAnalyzing && !report && (
+          {isAnalyzing && !report && mode !== "live" && (
             <div className="analyze-loader report-loader" role="status" aria-live="polite">
               <span className="analyze-spinner" aria-hidden="true" />
               <div className="analyze-loader-content">
@@ -854,7 +1092,15 @@ export default function App() {
               </button>
             </div>
           )}
-          {!report && !isAnalyzing && <p className="empty">Select a completed investigation.</p>}
+          {!report && !isAnalyzing && (
+            <p className="empty">
+              {liveState?.connected
+                ? liveState.analyzing
+                  ? "First live AI report is running — numbers above update immediately."
+                  : "Live stats are streaming. An AI report will appear here when the first window is analyzed."
+                : "Select a completed investigation."}
+            </p>
+          )}
           {report && isWso2Report(report) && (
             <>
               <div className="report-head">

@@ -128,6 +128,56 @@ export interface Wso2Report {
   doc_references: string[];
 }
 
+export interface LiveFileState {
+  name: string;
+  path: string;
+  log_type: string;
+  size: number;
+  bytes_read: number;
+  offset: number;
+  rotated: number;
+}
+
+export interface LiveState {
+  connected: boolean;
+  mode: string | null;
+  host: string | null;
+  username: string | null;
+  log_dirs: string[];
+  started_at: string | null;
+  last_poll_at: string | null;
+  error: string | null;
+  warnings: string[];
+  files: LiveFileState[];
+  snapshot: Record<string, unknown>;
+  last_report_id: string | null;
+  last_job_id: string | null;
+  analyzing: boolean;
+  reports_generated: number;
+}
+
+export interface LiveConnectBody {
+  mode: "ssh" | "local";
+  host?: string;
+  port?: number;
+  username?: string;
+  password?: string;
+  private_key?: string;
+  key_passphrase?: string;
+  log_dir: string;
+  extra_log_dirs?: string[];
+  poll_seconds?: number;
+  report_interval_seconds?: number;
+  os_name?: string;
+  apim_version?: string;
+  ei_version?: string;
+  ip_addresses?: unknown;
+  compute_allocation?: unknown;
+  db_version?: string;
+  notes?: string;
+  environment?: string;
+}
+
 const API = import.meta.env.VITE_API_URL || "";
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -180,6 +230,16 @@ export const api = {
     if (!res.ok) throw new Error(await res.text());
     return res.json() as Promise<{ job_id: string; status: string; message: string }>;
   },
+  liveConnect: (body: LiveConnectBody) =>
+    req<{ status: string; message: string; mode: string; host: string | null; log_dirs: string[]; files: string[] }>(
+      "/api/live/connect",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  liveDisconnect: () => req<{ status: string }>("/api/live/disconnect", { method: "POST" }),
+  liveStatus: () => req<LiveState>("/api/live/status"),
+  liveAnalyzeNow: () =>
+    req<{ status: string; job_id: string; message: string }>("/api/live/analyze-now", { method: "POST" }),
+  liveStreamUrl: () => `${API}/api/live/stream`,
   jobs: () => req<{ jobs: Job[] }>("/api/jobs"),
   job: (id: string) => req<Job>(`/api/jobs/${id}`),
   stopJob: (id: string) => req<Job>(`/api/jobs/${id}/stop`, { method: "POST" }),

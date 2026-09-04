@@ -3,10 +3,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.live import router as live_router
 from app.api.routes import router
 from app.config import get_settings
 from app.db.database import init_db
 from app.models.schemas import WebhookAck
+from app.services.live_monitor import live_monitor
 from app.webhooks.gitlab import handle_gitlab_webhook
 
 
@@ -15,6 +17,7 @@ async def lifespan(_app: FastAPI):
     settings = get_settings()
     await init_db()
     yield
+    await live_monitor.disconnect()
 
 
 def create_app() -> FastAPI:
@@ -33,6 +36,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(router, prefix="/api")
+    app.include_router(live_router, prefix="/api")
 
     @app.post("/api/webhooks/gitlab", response_model=WebhookAck, include_in_schema=True)
     async def gitlab_hook(
@@ -49,6 +53,8 @@ def create_app() -> FastAPI:
             "docs": "/docs",
             "health": "/api/health",
             "wso2_analyze": "POST /api/wso2/analyze",
+            "live_connect": "POST /api/live/connect",
+            "live_stream": "GET /api/live/stream",
             "investigate": "POST /api/investigate",
             "gitlab_webhook": "POST /api/webhooks/gitlab",
         }

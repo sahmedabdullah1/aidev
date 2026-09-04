@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     max_log_bytes: int = 2_000_000
     wso2_max_log_bytes: int = 40_000_000  # production carbon logs are often 10-50MB
 
+    # Live server tail
+    live_poll_seconds: float = 5.0
+    live_report_interval_seconds: float = 180.0
+    live_seed_bytes: int = 2_000_000
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
